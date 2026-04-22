@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>STICK VS DEAD — A Zombie Apocalypse</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Creepster&family=Oswald:wght@700&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: 100vh;
+    font-family: 'Oswald', sans-serif;
+  }
+  #title-screen {
+    position: fixed; inset: 0;
+    background: #0a0a0a;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 100;
+    transition: opacity 1s;
+  }
+  #title-screen h1 {
+    font-family: 'Creepster', cursive;
+    font-size: 72px;
+    color: #ff2200;
+    text-shadow: 0 0 30px #ff2200, 0 0 60px #ff0000;
+    letter-spacing: 4px;
+    animation: flicker 2s infinite;
+  }
+  #title-screen p {
+    color: #888; font-size: 18px; margin-top: 10px; letter-spacing: 3px;
+  }
+  #title-screen button {
+    margin-top: 40px;
+    padding: 14px 48px;
+    background: #ff2200; color: #fff;
+    border: none; font-family: 'Oswald', sans-serif;
+    font-size: 22px; letter-spacing: 2px;
+    cursor: pointer; border-radius: 4px;
+    box-shadow: 0 0 20px #ff2200;
+    transition: transform 0.1s, box-shadow 0.1s;
+  }
+  #title-screen button:hover { transform: scale(1.05); box-shadow: 0 0 40px #ff2200; }
+  @keyframes flicker {
+    0%,100%{opacity:1} 92%{opacity:1} 93%{opacity:0.4} 94%{opacity:1} 96%{opacity:0.7} 97%{opacity:1}
+  }
+  #cartoon-wrap {
+    display: none; flex-direction: column; align-items: center; gap: 12px;
+  }
+  canvas {
+    border: 3px solid #333;
+    border-radius: 4px;
+    box-shadow: 0 0 40px rgba(255,34,0,0.3);
+    background: #1a1a2e;
+  }
+  #hud {
+    display: flex; justify-content: space-between; align-items: center;
+    width: 800px; padding: 0 4px;
+  }
+  #scene-label {
+    color: #ff4400; font-size: 14px; letter-spacing: 2px; text-transform: uppercase;
+  }
+  #timer-display {
+    color: #888; font-size: 14px; letter-spacing: 1px;
+  }
+  #progress-bar-wrap {
+    width: 800px; height: 6px; background: #222; border-radius: 3px; overflow: hidden;
+  }
+  #progress-bar {
+    height: 100%; background: linear-gradient(90deg, #ff2200, #ff6600);
+    width: 0%; transition: width 0.3s;
+  }
+  #credits {
+    display: none; position: fixed; inset: 0;
+    background: #0a0a0a;
+    flex-direction: column; align-items: center; justify-content: center;
+    color: #fff; text-align: center;
+  }
+  #credits h2 { font-family:'Creepster',cursive; font-size:52px; color:#ff2200; margin-bottom:20px; }
+  #credits p { color:#888; font-size:16px; line-height:2; }
+</style>
+</head>
+<body>
+
+<div id="title-screen">
+  <h1>STICK VS DEAD</h1>
+  <p>A ZOMBIE APOCALYPSE SURVIVAL CARTOON</p>
+  <button onclick="startCartoon()">▶ PLAY (5 min)</button>
+</div>
+
+<div id="cartoon-wrap">
+  <div id="hud">
+    <span id="scene-label">SCENE 1</span>
+    <span id="timer-display">0:00 / 5:00</span>
+    <button id="mute-btn" onclick="toggleMute()" style="background:#333;color:#aaa;border:1px solid #555;padding:4px 14px;font-family:Oswald,sans-serif;font-size:13px;cursor:pointer;border-radius:3px;letter-spacing:1px;">🔊 SOUND ON</button>
+  </div>
+  <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
+  <canvas id="c" width="800" height="450"></canvas>
+</div>
+
+<div id="credits">
+  <h2>🧟 SURVIVED! 🧟</h2>
+  <p>Stick Man lived to see another day...<br>but at what cost?<br><br>
+  <span style="color:#ff4400">THE END</span><br><br>
+  <span style="color:#555;font-size:13px">Written, directed & animated in HTML Canvas<br>No actual zombies were harmed</span></p>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 450;
+
+// Safety wrapper: prevent negative/zero radius from crashing the canvas
+const _arc = ctx.arc.bind(ctx);
+ctx.arc = function(x, y, r, ...rest) {
+  if(r <= 0) return;
+  _arc(x, y, r, ...rest);
+};
+
+let startTime, animFrame, elapsed = 0;
+const TOTAL = 300; // 5 minutes in seconds
+
+// ── FULL AUDIO ENGINE ────────────────────────────────────────────────────────
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+const masterGain = AC.createGain(); masterGain.gain.value = 0.7; masterGain.connect(AC.destination);
+
+// Reverb convolver for spooky echo
+let reverb;
+(async () => {
+  const len = AC.sampleRate * 2.5;
+  const buf = AC.createBuffer(2, len, AC.sampleRate);
+  for(let c=0;c<2;c++){const d=buf.getChannelData(c);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.5);}
+  reverb = AC.createConvolver(); reverb.buffer = buf;
+  const rg = AC.createGain(); rg.gain.value = 0.18;
+  reverb.connect(rg); rg.connect(masterGain);
+})();
+
+function withReverb(node) { if(reverb) node.connect(reverb); }
+
+// ── Core synth primitives ────────────────────────────────────────────────────
+function osc(freq, type, start, dur, vol, freq2) {
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, start);
+  if(freq2) o.frequency.linearRampToValueAtTime(freq2, start+dur);
+  g.gain.setValueAtTime(0, start);
+  g.gain.linearRampToValueAtTime(vol, start+0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, start+dur);
+  o.connect(g); g.connect(masterGain); withReverb(g);
+  o.start(start); o.stop(start+dur+0.05);
+}
+
+function noise(dur, vol, start, filterFreq=800) {
+  const len = AC.sampleRate * dur;
+  const buf = AC.createBuffer(1, len, AC.sampleRate);
+  const d = buf.getChannelData(0);
+  for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+  const src = AC.createBufferSource();
+  src.buffer = buf;
+  const filt = AC.createBiquadFilter();
+  filt.type='lowpass'; filt.frequency.value = filterFreq;
+  const g = AC.createGain();
+  g.gain.setValueAtTime(vol, start);
+  g.gain.exponentialRampToValueAtTime(0.0001, start+dur);
+  src.connect(filt); filt.connect(g); g.connect(masterGain);
+  src.start(start); src.stop(start+dur+0.05);
+}
+
+// ── Sound effects ────────────────────────────────────────────────────────────
+function groan() {
+  const t = AC.currentTime;
+  const freq = 70 + Math.random()*50;
+  osc(freq, 'sawtooth', t, 0.05, 0.12);
+  osc(freq*1.5, 'sawtooth', t+0.05, 0.4, 0.06, freq*0.7);
+  osc(freq*0.5, 'sine', t, 0.7, 0.08, freq*0.4);
+  noise(0.3, 0.04, t+0.1, 200);
+}
+
+function footstep() {
+  const t = AC.currentTime;
+  noise(0.08, 0.15, t, 300);
+  osc(80, 'sine', t, 0.08, 0.1, 40);
+}
+
+function swing() {
+  const t = AC.currentTime;
+  osc(400, 'sawtooth', t, 0.05, 0.08, 150);
+  osc(800, 'square', t, 0.03, 0.05, 200);
+  noise(0.1, 0.1, t, 2000);
+}
+
+function smash() {
+  const t = AC.currentTime;
+  noise(0.3, 0.25, t, 1500);
+  osc(120, 'square', t, 0.2, 0.12, 40);
+  osc(60, 'sine', t, 0.15, 0.15, 30);
+}
+
+function heartbeat() {
+  const t = AC.currentTime;
+  osc(55, 'sine', t, 0.12, 0.2);
+  noise(0.06, 0.08, t, 100);
+  osc(50, 'sine', t+0.18, 0.1, 0.15);
+  noise(0.05, 0.06, t+0.18, 80);
+}
+
+function scream() {
+  const t = AC.currentTime;
+  osc(600, 'sawtooth', t, 0.04, 0.15, 900);
+  osc(900, 'sawtooth', t+0.04, 0.3, 0.1, 500);
+  osc(400, 'square', t, 0.35, 0.05, 200);
+}
+
+function victoryFanfare() {
+  const t = AC.currentTime;
+  const melody = [523,659,784,1047];
+  melody.forEach((f,i) => {
+    osc(f, 'square', t+i*0.15, 0.2, 0.12);
+    osc(f*0.5, 'sine', t+i*0.15, 0.2, 0.06);
+  });
+  setTimeout(()=>{
+    const t2 = AC.currentTime;
+    [523,587,659,784,880,1047].forEach((f,i)=>{
+      osc(f,'triangle',t2+i*0.1,0.25,0.1);
+    });
+  }, 700);
+}
+
+function doorCreak() {
+  const t = AC.currentTime;
+  osc(180, 'sawtooth', t, 0.8, 0.08, 120);
+  osc(200, 'sawtooth', t+0.1, 0.6, 0.05, 80);
+  noise(0.4, 0.04, t, 400);
+}
+
+function windSound() {
+  const t = AC.currentTime;
+  noise(2.0, 0.04, t, 600);
+  osc(80, 'sine', t, 2.0, 0.03, 60);
+}
+
+function firecrackle() {
+  const t = AC.currentTime;
+  for(let i=0;i<3;i++) {
+    noise(0.05+Math.random()*0.08, 0.05+Math.random()*0.05, t+i*0.15, 2000+Math.random()*1000);
+  }
+}
+
+// ── Procedural music engine ──────────────────────────────────────────────────
+let musicInterval = null;
+let currentMusicMode = '';
+
+const SCALES = {
+  creepy:  [55, 58, 62, 65, 67, 70, 72],
+  tense:   [55, 57, 60, 62, 65, 67, 69],
+  action:  [55, 59, 62, 66, 67, 71, 74],
+  hopeful: [55, 59, 62, 64, 66, 71, 74],
+  victory: [523, 587, 659, 784, 880]
+};
+
+function playMusicNote(scale, octMult=1) {
+  const t = AC.currentTime;
+  const notes = SCALES[scale];
+  const freq = notes[Math.floor(Math.random()*notes.length)] * octMult;
+  const types = ['sine','triangle'];
+  osc(freq, types[Math.floor(Math.random()*types.length)], t, 0.4+Math.random()*0.5, 0.04+Math.random()*0.04);
+}
+
+function playBassNote(scale) {
+  const t = AC.currentTime;
+  const notes = SCALES[scale];
+  const freq = notes[Math.floor(Math.random()*notes.length)] * 0.25;
+  osc(freq, 'sine', t, 0.6, 0.06);
+}
+
+function startMusic(mode) {
+  if(currentMusicMode === mode) return;
+  stopMusic();
+  currentMusicMode = mode;
+
+  if(mode === 'calm') {
+    musicInterval = setInterval(() => {
+      if(Math.random()>0.4) playMusicNote('hopeful', 1);
+      if(Math.random()>0.7) playMusicNote('hopeful', 0.5);
+    }, 600);
+  } else if(mode === 'creepy') {
+    musicInterval = setInterval(() => {
+      if(Math.random()>0.3) playMusicNote('creepy', 1);
+      if(Math.random()>0.6) playBassNote('creepy');
+      if(Math.random()>0.8) groan();
+    }, 500);
+  } else if(mode === 'chase') {
+    musicInterval = setInterval(() => {
+      playMusicNote('tense', 1);
+      if(Math.random()>0.5) playMusicNote('tense', 2);
+      if(Math.random()>0.6) playBassNote('tense');
+      noise(0.08, 0.06, AC.currentTime, 500);
+    }, 250);
+  } else if(mode === 'hide') {
+    musicInterval = setInterval(() => {
+      if(Math.random()>0.6) playMusicNote('creepy', 0.5);
+      if(Math.random()>0.8) playBassNote('creepy');
+    }, 900);
+  } else if(mode === 'action') {
+    musicInterval = setInterval(() => {
+      playMusicNote('action', 1);
+      if(Math.random()>0.4) playMusicNote('action', 2);
+      playBassNote('action');
+      if(Math.random()>0.5) noise(0.06, 0.08, AC.currentTime, 800);
+    }, 200);
+  } else if(mode === 'hope') {
+    musicInterval = setInterval(() => {
+      playMusicNote('hopeful', 1);
+      if(Math.random()>0.5) playMusicNote('hopeful', 2);
+      if(Math.random()>0.7) playBassNote('hopeful');
+    }, 400);
+  } else if(mode === 'victory') {
+    victoryFanfare();
+    musicInterval = setInterval(() => {
+      playMusicNote('victory', 1);
+      if(Math.random()>0.5) playMusicNote('victory', 0.5);
+    }, 350);
+  }
+}
+
+function stopMusic() {
+  if(musicInterval) { clearInterval(musicInterval); musicInterval=null; }
+  currentMusicMode = '';
+}
+
+// ── Drawing helpers ──────────────────────────────────────────────────────────
+function clear(color='#1a1a2e') {
+  ctx.fillStyle = color; ctx.fillRect(0, 0, W, H);
+}
+
+function ground(y=350, color='#2d2d2d') {
+  ctx.fillStyle = color; ctx.fillRect(0, y, W, H - y);
+  ctx.strokeStyle = '#444'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+}
+
+function sky(t) {
+  const grad = ctx.createLinearGradient(0,0,0,350);
+  grad.addColorStop(0, t==='day'?'#1a3a5c':'#0a0a1a');
+  grad.addColorStop(1, t==='day'?'#2a5a8c':'#1a0a2a');
+  ctx.fillStyle = grad; ctx.fillRect(0,0,W,350);
+}
+
+function moon(x,y) {
+  ctx.fillStyle='#ffeeaa'; ctx.beginPath(); ctx.arc(x,y,28,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#1a1a30'; ctx.beginPath(); ctx.arc(x+10,y-8,22,0,Math.PI*2); ctx.fill();
+}
+
+function star(x,y,s=2) {
+  ctx.fillStyle='rgba(255,255,200,0.8)';
+  ctx.fillRect(x,y,s,s);
+}
+
+function building(x, w, h, color='#1a1a1a') {
+  ctx.fillStyle = color; ctx.fillRect(x, 350-h, w, h);
+  // windows
+  ctx.fillStyle='rgba(255,200,50,0.3)';
+  for(let wy=350-h+10; wy<345; wy+=20) {
+    for(let wx=x+8; wx<x+w-8; wx+=16) {
+      if(Math.random()>0.4) ctx.fillRect(wx, wy, 8, 10);
+    }
+  }
+}
+
+function smoke(x,y,r,alpha) {
+  ctx.globalAlpha=alpha;
+  ctx.fillStyle='#888';
+  ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+  ctx.globalAlpha=1;
+}
+
+// ── Stick Man ────────────────────────────────────────────────────────────────
+function stick(x, y, opts={}) {
+  const {
+    legL=0, legR=0, armL=-0.8, armR=0.8,
+    run=0, color='#e0e0e0', scared=false, dead=false,
+    hat=false, weapon=null, facing=1
+  } = opts;
+  ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.lineCap='round';
+
+  // head
+  ctx.beginPath(); ctx.arc(x, y-38, 12, 0, Math.PI*2);
+  ctx.stroke();
+  // eyes
+  ctx.fillStyle=scared?'#fff':color;
+  ctx.beginPath(); ctx.arc(x+4*facing-3, y-40, scared?4:2, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle='#111';
+  ctx.beginPath(); ctx.arc(x+4*facing-3, y-40, scared?2:1.5, 0, Math.PI*2); ctx.fill();
+  if(dead) {
+    ctx.strokeStyle='#ff2200'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(x-6,y-44); ctx.lineTo(x-2,y-40); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x-2,y-44); ctx.lineTo(x-6,y-40); ctx.stroke();
+  }
+  // mouth
+  ctx.strokeStyle=color; ctx.lineWidth=2;
+  if(scared) {
+    ctx.beginPath(); ctx.arc(x,y-32,5,0,Math.PI); ctx.stroke();
+  } else if(!dead) {
+    ctx.beginPath(); ctx.moveTo(x-4,y-31); ctx.lineTo(x+4,y-31); ctx.stroke();
+  }
+  ctx.lineWidth=3;
+
+  // body
+  ctx.beginPath(); ctx.moveTo(x,y-26); ctx.lineTo(x,y); ctx.stroke();
+
+  // arms
+  const aLx = x + Math.cos(armL)*28, aLy = y-18 + Math.sin(armL)*18;
+  const aRx = x + Math.cos(armR)*28, aRy = y-18 + Math.sin(armR)*18;
+  ctx.beginPath(); ctx.moveTo(x,y-18); ctx.lineTo(aLx, aLy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x,y-18); ctx.lineTo(aRx, aRy); ctx.stroke();
+
+  // legs
+  const bob = run ? Math.sin(Date.now()/100)*20 : 0;
+  const lLx = x - 14, lLy = y + 28 + (run?Math.sin(Date.now()/100)*8:legL);
+  const lRx = x + 14, lRy = y + 28 + (run?Math.sin(Date.now()/100+Math.PI)*8:legR);
+  ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(lLx, lLy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(lRx, lRy); ctx.stroke();
+
+  // weapon
+  if(weapon==='bat') {
+    ctx.strokeStyle='#8B5E3C'; ctx.lineWidth=5;
+    ctx.beginPath(); ctx.moveTo(aRx, aRy); ctx.lineTo(aRx+30*facing, aRy-20); ctx.stroke();
+    ctx.fillStyle='#8B5E3C';
+    ctx.beginPath(); ctx.ellipse(aRx+30*facing, aRy-20, 8, 4, -0.5, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle=color; ctx.lineWidth=3;
+  }
+  if(weapon==='pipe') {
+    ctx.strokeStyle='#aaa'; ctx.lineWidth=5;
+    ctx.beginPath(); ctx.moveTo(aRx, aRy); ctx.lineTo(aRx+35*facing, aRy-10); ctx.stroke();
+    ctx.strokeStyle=color; ctx.lineWidth=3;
+  }
+  if(weapon==='torch') {
+    ctx.strokeStyle='#8B5E3C'; ctx.lineWidth=4;
+    ctx.beginPath(); ctx.moveTo(aLx, aLy); ctx.lineTo(aLx-5*facing, aLy-30); ctx.stroke();
+    const flicker = Math.sin(Date.now()/80);
+    ctx.fillStyle=`rgba(255,${150+flicker*50},0,0.9)`;
+    ctx.beginPath(); ctx.arc(aLx-5*facing, aLy-38, Math.max(1, 8+flicker*2), 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle='rgba(255,255,100,0.6)';
+    ctx.beginPath(); ctx.arc(aLx-5*facing, aLy-36, 4, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle=color; ctx.lineWidth=3;
+  }
+
+  // hat
+  if(hat) {
+    ctx.fillStyle='#222';
+    ctx.fillRect(x-14, y-54, 28, 6);
+    ctx.fillRect(x-8, y-70, 16, 16);
+  }
+}
+
+// ── Zombie ───────────────────────────────────────────────────────────────────
+function zombie(x, y, opts={}) {
+  const { phase=0, smashed=false, color='#4a7a4a' } = opts;
+  if(smashed) {
+    ctx.strokeStyle='#4a7a4a'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(x-20,y); ctx.lineTo(x+20,y); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, y-10, 10, 0, Math.PI*2); ctx.stroke();
+    ctx.fillStyle='rgba(100,200,100,0.4)';
+    ctx.beginPath(); ctx.arc(x, y-10, 10, 0, Math.PI*2); ctx.fill();
+    return;
+  }
+  const sway = Math.sin(Date.now()/200 + phase) * 8;
+  ctx.strokeStyle=color; ctx.lineWidth=3; ctx.lineCap='round';
+  ctx.beginPath(); ctx.arc(x, y-38+sway*0.3, 12, 0, Math.PI*2); ctx.stroke();
+  ctx.fillStyle='rgba(74,122,74,0.3)';
+  ctx.beginPath(); ctx.arc(x, y-38+sway*0.3, 12, 0, Math.PI*2); ctx.fill();
+  // X eyes
+  ctx.strokeStyle='#ff4400'; ctx.lineWidth=2;
+  [[-5,0],[5,0]].forEach(([ex])=>{
+    ctx.beginPath(); ctx.moveTo(x+ex-3, y-41+sway*0.3); ctx.lineTo(x+ex+3, y-35+sway*0.3); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+ex+3, y-41+sway*0.3); ctx.lineTo(x+ex-3, y-35+sway*0.3); ctx.stroke();
+  });
+  ctx.strokeStyle=color; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.moveTo(x,y-26+sway*0.3); ctx.lineTo(x,y); ctx.stroke();
+  // droopy arms
+  ctx.beginPath(); ctx.moveTo(x,y-20); ctx.lineTo(x-30+sway,y-10); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x,y-20); ctx.lineTo(x+30+sway,y-10); ctx.stroke();
+  // legs shamble
+  const ls = Math.sin(Date.now()/300+phase)*15;
+  ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x-10+ls,y+28); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+10-ls,y+28); ctx.stroke();
+}
+
+// ── Scene system ─────────────────────────────────────────────────────────────
+// Each scene: {start, end, draw(t)} where t=0..1 within scene
+const scenes = [];
+function addScene(start, end, draw) { scenes.push({start,end,draw}); }
+
+let runX = 50, zombiesSeen = 0, lastGroan = 0, lastHeartbeat = 0;
+
+// ── SCENE 1: 0-30s — Normal Morning ─────────────────────────────────────────
+addScene(0, 30, (t, e) => {
+  sky('day');
+  // sun rising
+  const sunY = 80 - t * 20;
+  ctx.fillStyle='#ffe066'; ctx.beginPath(); ctx.arc(700, sunY, 40, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle='rgba(255,220,50,0.2)'; ctx.beginPath(); ctx.arc(700,sunY,70,0,Math.PI*2); ctx.fill();
+  // city
+  building(50,80,200,'#1e3040'); building(180,60,160,'#1a2a38');
+  building(290,100,220,'#162030'); building(450,70,180,'#1e3040');
+  building(600,90,200,'#121c28'); building(700,50,150,'#1a2a38');
+  ground(350,'#2a2a2a');
+  // title text
+  if(t<0.5) {
+    ctx.globalAlpha = t < 0.2 ? t/0.2 : (t>0.4?(0.5-t)/0.1:1);
+    ctx.font = 'bold 28px Oswald'; ctx.fillStyle='#fff';
+    ctx.textAlign='center'; ctx.fillText('A NORMAL MORNING...', W/2, 180);
+    ctx.font='16px Oswald'; ctx.fillStyle='#aaa';
+    ctx.fillText('...OR SO HE THOUGHT', W/2, 210);
+    ctx.globalAlpha=1;
+  }
+  startMusic('calm');
+  if(Math.floor(e*4) !== Math.floor((e-0.017)*4) && t>0.1) footstep();
+  // Stick man walking left to right
+  const mx = 80 + t * 200;
+  stick(mx, 350, { run: true, facing: 1, color:'#e0e0e0' });
+  // birds
+  const bx = (t*1.2 % 1) * 900;
+  ctx.strokeStyle='#666'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(bx, 80); ctx.quadraticCurveTo(bx+10,70,bx+20,80); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(bx+30,85); ctx.quadraticCurveTo(bx+40,75,bx+50,85); ctx.stroke();
+  updateHUD('SCENE 1: A Normal Morning', e);
+});
+
+// ── SCENE 2: 30-70s — First Zombie Spotted ───────────────────────────────────
+addScene(30, 70, (t, e) => {
+  sky('day');
+  building(0,W,250,'#111'); ground(350,'#2a2a2a');
+  // zoom-in effect
+  const shake = t > 0.5 ? Math.sin(Date.now()/50)*4 : 0;
+  ctx.save(); ctx.translate(shake, 0);
+  stick(200, 350, { color:'#e0e0e0', scared: t>0.5, facing:1, weapon: t>0.7?'bat':null });
+  // zombie appearing from right
+  const zx = 750 - t * 350;
+  zombie(zx, 350, { phase: 0 });
+  if(t < 0.01) startMusic('creepy');
+  if(t > 0.44 && t < 0.46) scream();
+  if(t>0.45 && t<0.52 && Date.now()-lastGroan > 1200) { groan(); lastGroan=Date.now(); }
+  // SPEECH BUBBLE
+  if(t>0.4 && t<0.65) {
+    ctx.fillStyle='#fff'; roundRect(ctx, 220, 290, 140, 34, 8);
+    ctx.fill(); ctx.strokeStyle='#333'; ctx.lineWidth=1; ctx.stroke();
+    ctx.fillStyle='#222'; ctx.font='bold 14px Oswald';
+    ctx.textAlign='center'; ctx.fillText('WHAT THE—!!', 290, 311);
+    // tail
+    ctx.fillStyle='#fff';
+    ctx.beginPath(); ctx.moveTo(250,324); ctx.lineTo(220,340); ctx.lineTo(270,324); ctx.fill();
+  }
+  if(t>0.65) {
+    ctx.fillStyle='#fff'; roundRect(ctx, 210, 285, 150, 34, 8); ctx.fill();
+    ctx.strokeStyle='#333'; ctx.lineWidth=1; ctx.stroke();
+    ctx.fillStyle='#c00'; ctx.font='bold 14px Oswald';
+    ctx.textAlign='center'; ctx.fillText('ZOMBIE!!! RUN!!!', 285, 306);
+    ctx.fillStyle='#fff';
+    ctx.beginPath(); ctx.moveTo(240,319); ctx.lineTo(210,335); ctx.lineTo(260,319); ctx.fill();
+  }
+  ctx.restore();
+  updateHUD('SCENE 2: First Contact', e);
+});
+
+// ── SCENE 3: 70-120s — Chase Scene ───────────────────────────────────────────
+addScene(70, 120, (t, e) => {
+  sky('day');
+  // scrolling city bg
+  const scroll = t * 400;
+  for(let i=0; i<5; i++) {
+    const bx = ((i*200 - scroll) % 900 + 900) % 900 - 100;
+    building(bx, 80+i*10, 150+i*30, '#111');
+  }
+  ground(350,'#2a2a2a');
+  // hero running
+  stick(180, 350, { run: true, facing:1, weapon:'bat', color:'#e0e0e0', scared: t>0.6 });
+  // horde of zombies chasing
+  const numZ = Math.floor(t*5)+1;
+  for(let i=0; i<numZ; i++) {
+    const zx = 380 + i*80 + Math.sin(Date.now()/300+i)*5;
+    zombie(zx, 350, { phase: i });
+  }
+  if(t<0.01) startMusic('chase');
+  if(Math.floor(e*5) !== Math.floor((e-0.017)*5)) footstep();
+  if(t>0.3 && t<0.31) { groan(); }
+  if(Math.floor(e*1.5) !== Math.floor((e-0.017)*1.5) && t>0.3) groan();
+  // dramatic speed lines
+  if(t>0.5) {
+    ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=2;
+    for(let i=0;i<8;i++) {
+      const ly = 100+i*30;
+      ctx.beginPath(); ctx.moveTo(W,ly); ctx.lineTo(W-200-t*100,ly+5); ctx.stroke();
+    }
+  }
+  // "X zombies chasing!" label
+  ctx.fillStyle='#ff4400'; ctx.font='bold 18px Oswald'; ctx.textAlign='left';
+  ctx.fillText(`🧟 ${numZ} ZOMBIE${numZ>1?'S':''} CHASING!`, 20, 40);
+  updateHUD('SCENE 3: The Chase', e);
+});
+
+// ── SCENE 4: 120-150s — Hiding in Store ──────────────────────────────────────
+addScene(120, 150, (t, e) => {
+  // dark interior
+  ctx.fillStyle='#0d0d1a'; ctx.fillRect(0,0,W,H);
+  ground(350,'#1a1a1a');
+  // shelves
+  ctx.fillStyle='#2a2015'; ctx.fillRect(400,200,300,30); ctx.fillRect(400,260,300,30); ctx.fillRect(400,320,300,30);
+  ctx.fillStyle='#3a3025';
+  for(let i=0;i<8;i++) { ctx.fillRect(410+i*36, 170, 28, 30); }
+  // boarded window glow
+  ctx.fillStyle='rgba(255,200,100,0.05)';
+  ctx.fillRect(50,100,200,150);
+  ctx.strokeStyle='#5a3a1a'; ctx.lineWidth=8;
+  for(let b=0;b<4;b++) { ctx.beginPath(); ctx.moveTo(50,100+b*40); ctx.lineTo(250,100+b*40); ctx.stroke(); }
+  // stick man crouching/hiding
+  const cx = 150, cy = 350;
+  stick(cx, cy, {
+    color:'#e0e0e0', scared: true, facing:1,
+    weapon: t>0.5?'bat':null,
+    armL: -1.5, armR: 1.5, legL:8, legR:8
+  });
+  // heartbeat pulse
+  if(t<0.01) { startMusic('hide'); doorCreak(); }
+  if(t>0.1 && Date.now()-lastHeartbeat > 900) { heartbeat(); lastHeartbeat=Date.now(); }
+  if(t>0.3 && Math.floor(e*0.8) !== Math.floor((e-0.017)*0.8)) { 
+    noise(0.15, 0.07, AC.currentTime, 400); // zombie scratching sound
+  }
+  // zombie hands through window
+  if(t>0.3) {
+    const wt = Math.sin(Date.now()/150)*10;
+    ctx.strokeStyle='#4a7a4a'; ctx.lineWidth=4;
+    ctx.beginPath(); ctx.moveTo(50+wt, 150); ctx.lineTo(100+wt, 200); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(80+wt, 140); ctx.lineTo(120+wt, 190); ctx.stroke();
+    ctx.beginPath(); ctx.arc(50+wt, 145, 14, 0, Math.PI*2); ctx.strokeStyle='#4a7a4a'; ctx.stroke();
+  }
+  // sound waves
+  if(t>0.3) {
+    ctx.strokeStyle='rgba(100,200,100,0.3)'; ctx.lineWidth=2;
+    const r = Math.max(1, (Date.now()/8) % 80);
+    ctx.beginPath(); ctx.arc(65, 160, r, 0, Math.PI*2); ctx.stroke();
+    if(r > 31) { ctx.beginPath(); ctx.arc(65, 160, r-30, 0, Math.PI*2); ctx.stroke(); }
+  }
+  // "SHHHH" bubble
+  if(t>0.2) {
+    ctx.fillStyle='rgba(255,255,255,0.9)'; roundRect(ctx,180,295,100,30,6); ctx.fill();
+    ctx.fillStyle='#000'; ctx.font='bold 15px Oswald'; ctx.textAlign='center';
+    ctx.fillText('SHHH... 😰', 230, 314);
+  }
+  updateHUD('SCENE 4: Hiding', e);
+});
+
+// ── SCENE 5: 150-190s — Finding Weapons ──────────────────────────────────────
+addScene(150, 190, (t, e) => {
+  ctx.fillStyle='#0d0d1a'; ctx.fillRect(0,0,W,H);
+  ground(350,'#1a1a1a');
+  // back room/storage
+  ctx.fillStyle='#1a0d00'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#2a1a00'; ctx.fillRect(0,350,W,100);
+  ctx.strokeStyle='#3a2a00'; ctx.lineWidth=3;
+  // crates
+  ctx.fillStyle='#3a2a10'; ctx.fillRect(500,270,80,80); ctx.fillRect(620,290,70,60);
+  ctx.strokeStyle='#5a4a20'; ctx.lineWidth=2;
+  ctx.strokeRect(500,270,80,80); ctx.strokeRect(620,290,70,60);
+  ctx.beginPath(); ctx.moveTo(540,270); ctx.lineTo(540,350); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(500,310); ctx.lineTo(580,310); ctx.stroke();
+  // discovery spotlight
+  const sx = 300 + t*200;
+  const sGrad = ctx.createRadialGradient(sx, 350, 0, sx, 300, 120);
+  sGrad.addColorStop(0,'rgba(255,200,100,0.2)');
+  sGrad.addColorStop(1,'transparent');
+  ctx.fillStyle=sGrad; ctx.fillRect(0,0,W,H);
+  // torch
+  if(t>0.2) {
+    ctx.strokeStyle='#8B5E3C'; ctx.lineWidth=6;
+    ctx.beginPath(); ctx.moveTo(350,360); ctx.lineTo(350,310); ctx.stroke();
+    const fl=Math.sin(Date.now()/80)*4;
+    ctx.fillStyle='rgba(255,150,0,0.9)'; ctx.beginPath(); ctx.arc(350,302,Math.max(1,10+fl),0,Math.PI*2); ctx.fill();
+  }
+  if(t<0.01) startMusic('creepy');
+  if(t>0.49 && t<0.51) { // pickup torch sound
+    osc(440,'sine',AC.currentTime,0.1,0.12);
+    osc(660,'sine',AC.currentTime+0.1,0.15,0.1);
+    osc(880,'triangle',AC.currentTime+0.2,0.2,0.08);
+  }
+  if(t>0.3) firecrackle();
+  // hero picking up items
+  stick(200, 350, { color:'#e0e0e0', facing:1,
+    weapon: t>0.5?'torch':null,
+    armR: t>0.5 ? -0.4 : 0.8,
+    armL: t>0.5 ? -1.8 : -0.8
+  });
+  // caption
+  ctx.fillStyle='#ff8800'; ctx.font='bold 20px Oswald'; ctx.textAlign='center';
+  if(t<0.3) ctx.fillText('SEARCHING FOR SUPPLIES...', W/2, 50);
+  else if(t<0.6) ctx.fillText('FOUND A TORCH!', W/2, 50);
+  else ctx.fillText('NOW TO FIGHT BACK!', W/2, 50);
+  updateHUD('SCENE 5: Finding Weapons', e);
+});
+
+// ── SCENE 6: 190-230s — Epic Fight ────────────────────────────────────────────
+addScene(190, 230, (t, e) => {
+  sky('day');
+  building(0,W,200,'#111'); ground(350,'#2a2a2a');
+  // hero fighting
+  const heroArm = Math.sin(Date.now()/80)*1.5;
+  stick(300, 350, {
+    color:'#e0e0e0', facing:1,
+    weapon:'bat',
+    armR: heroArm,
+    armL: -heroArm-0.5
+  });
+  // waves of zombies
+  const numZ = 3 + Math.floor(t*4);
+  const smashAt = Math.floor(t * numZ);
+  for(let i=0;i<numZ;i++) {
+    const zx = 520 + i*90 - t*60;
+    const sm = i < smashAt && t > 0.3;
+    zombie(zx, 350, { phase: i, smashed: sm });
+    // impact stars
+    if(sm && i===smashAt-1) {
+      ctx.fillStyle='#ffe066'; ctx.font='bold 24px Arial';
+      ctx.textAlign='center';
+      ctx.fillText('💥', zx, 310);
+    }
+  }
+  if(t<0.01) startMusic('action');
+  // swing sound
+  if(Math.sin(Date.now()/80) > 0.95 && Date.now()-lastGroan>300) {
+    swing(); if(Math.random()>0.5) smash(); lastGroan=Date.now();
+  }
+  // BAM/POW effects
+  if(t>0.3) {
+    const ef = ['BAM!','POW!','SMASH!','CRACK!'];
+    const idx = Math.floor(t*ef.length);
+    const pulse = Math.abs(Math.sin(Date.now()/120));
+    ctx.globalAlpha = 0.4+pulse*0.6;
+    ctx.fillStyle='#ff4400'; ctx.font=`bold ${36+pulse*8}px Oswald`;
+    ctx.textAlign='center'; ctx.fillText(ef[Math.min(idx,ef.length-1)], 450, 300);
+    ctx.globalAlpha=1;
+  }
+  // score counter
+  ctx.fillStyle='#ffe066'; ctx.font='bold 18px Oswald'; ctx.textAlign='left';
+  ctx.fillText(`ZOMBIES DEFEATED: ${smashAt}`, 20, 40);
+  updateHUD('SCENE 6: FIGHT BACK!', e);
+});
+
+// ── SCENE 7: 230-260s — Finding Survivors ─────────────────────────────────────
+addScene(230, 260, (t, e) => {
+  if(t<0.01) {
+    startMusic('hope');
+    setTimeout(()=>{[440,550,660].forEach((f,i)=>osc(f,'triangle',AC.currentTime+i*0.12,0.3,0.08));},500);
+  }
+  sky('day');
+  building(0,W,200,'#111'); ground(350,'#2a2a2a');
+  stick(150, 350, { color:'#e0e0e0', facing:1, weapon:'bat' });
+  // survivor appears
+  const sx2 = Math.max(600 - t*350, 250);
+  stick(sx2, 350, { color:'#ff9966', facing:-1 }); // red-tinted survivor
+  if(t>0.4) {
+    // speech
+    ctx.fillStyle='#fff'; roundRect(ctx, sx2-80, 290, 160, 34, 8); ctx.fill();
+    ctx.strokeStyle='#333'; ctx.lineWidth=1; ctx.stroke();
+    ctx.fillStyle='#222'; ctx.font='bold 13px Oswald'; ctx.textAlign='center';
+    ctx.fillText('THANK YOU! THERE\'S', sx2, 307);
+    ctx.fillText('A SAFE ZONE!', sx2, 320);
+  }
+  if(t>0.7) {
+    stick(sx2+60, 350, { color:'#99ccff', facing:-1 });
+    stick(sx2+120, 350, { color:'#ffcc99', facing:-1 });
+  }
+  ctx.fillStyle='#ffe066'; ctx.font='bold 20px Oswald'; ctx.textAlign='center';
+  if(t>0.3) ctx.fillText('SURVIVORS FOUND!', W/2, 40);
+  updateHUD('SCENE 7: Survivors', e);
+});
+
+// ── SCENE 8: 260-290s — Journey to Safe Zone ─────────────────────────────────
+addScene(260, 290, (t, e) => {
+  if(t<0.01) { startMusic('chase'); windSound(); }
+  if(Math.floor(e*4) !== Math.floor((e-0.017)*4)) footstep();
+  if(Math.floor(e*0.5) !== Math.floor((e-0.017)*0.5)) firecrackle();
+  // night sky
+  ctx.fillStyle='#050510'; ctx.fillRect(0,0,W,H);
+  for(let i=0;i<60;i++) { star(Math.sin(i*73.1)*400+400, Math.cos(i*41.7)*200+100, i%3+1); }
+  moon(720, 60);
+  // apocalyptic city silhouette
+  ctx.fillStyle='#0a0a14';
+  [0,120,220,340,460,580,680].forEach((bx,i) => {
+    ctx.fillRect(bx, 350-120-i%3*40, 80+i*5, 120+i%3*40);
+  });
+  ground(350,'#111');
+  // group walking
+  const gx = t * 350;
+  ['#e0e0e0','#ff9966','#99ccff','#ffcc99'].forEach((c,i) => {
+    stick(120+gx+i*50, 350, { color:c, run:true, facing:1, weapon: i===0?'torch':null });
+  });
+  // fires in distance
+  for(let f=0;f<4;f++) {
+    const fx = 200+f*180, fy = 310;
+    const fl=Math.sin(Date.now()/100+f)*5;
+    ctx.fillStyle=`rgba(255,${100+fl},0,0.8)`;
+    ctx.beginPath(); ctx.moveTo(fx,fy); ctx.lineTo(fx-15,fy+30); ctx.lineTo(fx+15,fy+30); ctx.closePath(); ctx.fill();
+    ctx.fillStyle=`rgba(255,200,50,0.5)`;
+    ctx.beginPath(); ctx.arc(fx, fy+20, Math.max(1, 12+fl), 0, Math.PI*2); ctx.fill();
+  }
+  // hope arrow
+  if(t>0.4) {
+    ctx.fillStyle='#ffe066'; ctx.font='bold 18px Oswald'; ctx.textAlign='center';
+    ctx.fillText('→ SAFE ZONE 2.4km →', W/2, 50);
+  }
+  updateHUD('SCENE 8: Into the Night', e);
+});
+
+// ── SCENE 9: 290-300s — Arrival & End ─────────────────────────────────────────
+addScene(290, 300, (t, e) => {
+  if(t<0.01) startMusic('victory');
+  // dawn
+  const grad = ctx.createLinearGradient(0,0,0,350);
+  grad.addColorStop(0,'#1a0a30');
+  grad.addColorStop(0.5,'#6a2a0a');
+  grad.addColorStop(1,'#2a1a0a');
+  ctx.fillStyle=grad; ctx.fillRect(0,0,W,350);
+  // rising sun
+  const sunA = t * 0.8;
+  const sunRadius = Math.max(1, 120*t);
+  ctx.fillStyle=`rgba(255,180,50,${sunA})`;
+  ctx.beginPath(); ctx.arc(400, 350, sunRadius, Math.PI, 0, false); ctx.fill();
+  ground(350,'#1a1510');
+  // safe zone fence/sign
+  ctx.fillStyle='#3a3020';
+  for(let i=0;i<16;i++) { ctx.fillRect(100+i*44, 310, 8, 40); }
+  ctx.fillRect(95,308,W-90,8);
+  ctx.fillStyle='#ffe066'; ctx.font='bold 28px Creepster'; ctx.textAlign='center';
+  ctx.fillText('⚡ SAFE ZONE ⚡', W/2, 280);
+  // group celebrating
+  ['#e0e0e0','#ff9966','#99ccff','#ffcc99'].forEach((c,i) => {
+    stick(220+i*80, 350, { color:c, facing:1,
+      armL: -Math.PI/2 - (t>0.5?0.5:0),
+      armR: Math.PI/2 + (t>0.5?0.5:0)
+    });
+  });
+  // fade in victory text
+  if(t>0.4) {
+    ctx.globalAlpha = (t-0.4)/0.6;
+    ctx.fillStyle='#ffe066'; ctx.font='bold 48px Creepster';
+    ctx.textAlign='center'; ctx.fillText('SURVIVED!', W/2, 160);
+    ctx.font='20px Oswald'; ctx.fillStyle='#aaa';
+    ctx.fillText('...for now.', W/2, 195);
+    ctx.globalAlpha=1;
+  }
+  updateHUD('SCENE 9: Survived!', e);
+});
+
+// ── Helper ────────────────────────────────────────────────────────────────────
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+
+function updateHUD(label, elapsed) {
+  document.getElementById('scene-label').textContent = label;
+  const mins = Math.floor(elapsed/60);
+  const secs = Math.floor(elapsed%60).toString().padStart(2,'0');
+  const tmins = Math.floor(TOTAL/60);
+  const tsecs = (TOTAL%60).toString().padStart(2,'0');
+  document.getElementById('timer-display').textContent = `${mins}:${secs} / ${tmins}:${tsecs}`;
+  document.getElementById('progress-bar').style.width = (elapsed/TOTAL*100)+'%';
+}
+
+// ── Main loop ──────────────────────────────────────────────────────────────────
+function loop(ts) {
+  if(!startTime) startTime = ts;
+  elapsed = Math.min((ts - startTime) / 1000, TOTAL);
+
+  clear();
+  let found = false;
+  for(const s of scenes) {
+    if(elapsed >= s.start && elapsed < s.end) {
+      const t = (elapsed - s.start) / (s.end - s.start);
+      s.draw(t, elapsed);
+      found = true; break;
+    }
+  }
+  if(!found && elapsed >= TOTAL) {
+    showCredits(); return;
+  }
+  animFrame = requestAnimationFrame(loop);
+}
+
+function toggleMute() {
+  const muted = masterGain.gain.value > 0;
+  masterGain.gain.value = muted ? 0 : 0.7;
+  document.getElementById('mute-btn').textContent = muted ? '🔇 MUTED' : '🔊 SOUND ON';
+}
+
+function showCredits() {
+  cancelAnimationFrame(animFrame);
+  stopMusic();
+  document.getElementById('cartoon-wrap').style.display='none';
+  const cr = document.getElementById('credits');
+  cr.style.display='flex';
+}
+
+function startCartoon() {
+  AC.resume();
+  document.getElementById('title-screen').style.opacity='0';
+  setTimeout(()=>{
+    document.getElementById('title-screen').style.display='none';
+    document.getElementById('cartoon-wrap').style.display='flex';
+    animFrame = requestAnimationFrame(loop);
+  }, 1000);
+}
+</script>
+</body>
+</html>
